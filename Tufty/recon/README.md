@@ -3,8 +3,8 @@
 A WiFi and Bluetooth scanner that tells you what things *are* rather than
 listing MAC addresses.
 
-![dashboard](https://raw.githubusercontent.com/jgamblin/Tufty2350-Badgeware/main/shots/recon.png)
-![detail](https://raw.githubusercontent.com/jgamblin/Tufty2350-Badgeware/main/shots/recon-detail.png)
+![dashboard](https://raw.githubusercontent.com/jgamblin/tufty-recon/main/shots/recon.png)
+![detail](https://raw.githubusercontent.com/jgamblin/tufty-recon/main/shots/recon-detail.png)
 
 Carried around for an evening it logged 214 access points and named 86% of them
 by manufacturer, plus 93% of the Bluetooth devices it heard. It picks out
@@ -59,7 +59,7 @@ It takes a 560KB budget of the filesystem and stops there rather than filling
 it, and the LOG view shows a capacity meter.
 
 Pull it off as CSV with
-[`tools/export_log.py`](https://github.com/jgamblin/Tufty2350-Badgeware/blob/main/tools/export_log.py).
+[`tools/export_log.py`](https://github.com/jgamblin/tufty-recon/blob/main/tools/export_log.py).
 
 ## Notes on counting
 
@@ -88,5 +88,5 @@ paused for the couple of seconds a WiFi scan takes.
 
 ## Source
 
-[jgamblin/Tufty2350-Badgeware](https://github.com/jgamblin/Tufty2350-Badgeware),
+[jgamblin/tufty-recon](https://github.com/jgamblin/tufty-recon),
 which also has the database builder, CSV exporter, and an on-device stress test.
