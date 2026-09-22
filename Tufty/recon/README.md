@@ -14,17 +14,23 @@ garage-door opener by name.
 Everything is passive. It never associates, transmits or captures traffic;
 every beacon and advertisement it reads is a public broadcast.
 
+Needs badgeware firmware **v3.1.0 or newer**.
+
 ## Views
 
+- **BILLBOARD** is one big number, readable from a couple of metres, for
+  wearing the badge facing outward. The app opens here.
 - **DASH** counts what is around you by kind: access points, phones, computers,
   wearables, audio/TV, trackers, Find My, other. Pick a row and press **A** to
   see just those.
 - **LIVE** lists everything in range, strongest first.
 - **DETAIL** shows the MAC, vendor, channel, security or protocol for one
   device.
-- **FLAGS** surfaces open networks, WEP, possible evil twins and trackers.
+- **FLAGS** surfaces open networks, WEP, rogue APs, possible evil twins and
+  trackers.
 - **VENDORS** ranks the hardware in the room.
 - **LOG** shows the persistent tally and how full the log is.
+- **SHARE** shows a QR code and the URL of the source, for when someone asks.
 
 ## Buttons
 

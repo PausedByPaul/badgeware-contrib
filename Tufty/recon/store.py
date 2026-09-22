@@ -1,12 +1,27 @@
 """
 Persistent, de-duplicated log for the recon app.
 
-Append-only fixed-width binary records on the badge's internal filesystem.
-/system is read-only from MicroPython, so this lives on the ~1MB LittleFS root;
-fixed-width records keep a four-day conference comfortably inside that.
+Append-only length-prefixed binary records on the badge's internal filesystem.
+/system is read-only from MicroPython, so this lives on the ~1MB LittleFS root.
 
-    wifi  48 bytes/AP      ~3000 APs    = 144KB
-    ble   40 bytes/device  ~8000 stable = 320KB
+The fields that vary are the two text ones, and they vary a lot: measured over
+a travel-day capture, the mean SSID was 7.7 characters against a 32-byte field
+and the mean device label 10 against 26. Padding them to a fixed width made
+**45% of the log zeroes**. Length-prefixing instead roughly halves it, which
+matters because the budget below is the real constraint on how long a
+conference can run before the log has to be emptied.
+
+    header  4 bytes, once per file: b"RCN" + format version
+    record  1 byte payload length, then the payload
+
+    ap      13 bytes + SSID   (0-32)   -> ~22 typical, was 45
+    device  14 bytes + label  (0-26)   -> ~25 typical, was 40
+
+The length prefix is what makes a truncated tail safe. Power can be lost
+part-way through an append, and the reader simply stops at the first record
+whose payload is short: everything before it is intact, and nothing after it
+is misparsed. Corruption in the middle is not a case worth designing for,
+since LittleFS checksums blocks.
 
 Only stable BLE addresses are written. Resolvable-private addresses rotate
 every ~15 minutes, so logging them would fill the disk with one phone.
@@ -20,26 +35,36 @@ import os
 import struct
 
 DIR = "/state"
-WIFI_PATH = DIR + "/recon_wifi.bin"
-BLE_PATH = DIR + "/recon_ble.bin"
+
+# Deliberately not the old names. A v1 fixed-width file left on a badge would
+# otherwise be read as v2 and produce confident nonsense; under new names it is
+# simply ignored.
+WIFI_PATH = DIR + "/recon_ap.bin"
+BLE_PATH = DIR + "/recon_dev.bin"
 META_PATH = DIR + "/recon_meta.bin"
 
-# < little-endian, no alignment padding.
-WIFI_FMT = "<6sBbBI32s"
-WIFI_SIZE = struct.calcsize(WIFI_FMT)     # 48
-BLE_FMT = "<6sBbHI26s"
-BLE_SIZE = struct.calcsize(BLE_FMT)       # 40
+MAGIC = b"RCN\x02"
+
+# Fixed part of each record; the text tail is length-prefixed on top.
+WIFI_HEAD = "<6sBbBI"                     # bssid, channel, rssi, security, first
+WIFI_HEAD_SIZE = struct.calcsize(WIFI_HEAD)   # 13
+BLE_HEAD = "<6sBbHI"                      # addr, kind, rssi, company, first
+BLE_HEAD_SIZE = struct.calcsize(BLE_HEAD)     # 14
+
+MAX_SSID = 32
+MAX_LABEL = 26
 
 NO_COMPANY = 0xFFFF
 
-# The LittleFS root is 1MB and is shared with every other app's state. These
-# caps are a byte budget rather than a record count, because the record count
-# that fits depends on what else is on the disk.
+# The LittleFS root is 1MB and is shared with every other app's state.
 BUDGET = 560 * 1024        # recon's share
 RESERVE = 64 * 1024        # never consume the last of the filesystem
 
-MAX_WIFI = BUDGET // 3 // WIFI_SIZE     # ~3900
-MAX_BLE = BUDGET * 2 // 3 // BLE_SIZE   # ~9500
+# Record counts are now only a guard on the in-RAM de-duplication sets; the
+# byte budget above is what actually bounds the file. Sized from the measured
+# typical record so they land near the same place the budget does.
+MAX_WIFI = 8000
+MAX_BLE = 18000
 
 
 def free_bytes():
@@ -67,10 +92,65 @@ def _trunc(s, n):
     return b[:n].decode("utf-8", "ignore").encode("utf-8")
 
 
+def _keys(path, head_size):
+    """Yield the 6-byte key of every intact record in a log file.
+
+    Reads the whole file at once: the budget caps it at 560KB and the badge has
+    megabytes of PSRAM free, so walking a buffer beats re-reading the file in
+    chunks and stitching records across the seams.
+    """
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError:
+        return
+    if not blob.startswith(MAGIC):
+        return          # foreign or older format; ignore rather than misread
+    i, n = len(MAGIC), len(blob)
+    while i < n:
+        ln = blob[i]
+        i += 1
+        if ln < head_size or i + ln > n:
+            return      # truncated tail: everything before this stands
+        yield blob[i:i + 6]
+        i += ln
+
+
+def _ble_walk():
+    """Yield (key, address_kind, label) for every intact Bluetooth record.
+
+    One walk, three facts. Layout is BLE_HEAD then the label: addr(6) kind(1)
+    rssi(1) company(2) first(4), so the kind sits one byte in and the label is
+    whatever follows the fixed head.
+    """
+    try:
+        with open(BLE_PATH, "rb") as f:
+            blob = f.read()
+    except OSError:
+        return
+    if not blob.startswith(MAGIC):
+        return
+    i, n = len(MAGIC), len(blob)
+    while i < n:
+        ln = blob[i]
+        i += 1
+        if ln < BLE_HEAD_SIZE or i + ln > n:
+            return
+        # The label stays raw. Decoding here cost real time for nothing: four
+        # out of five records on a conference log are public addresses, whose
+        # labels the caller throws away, and decoding all of them added about
+        # three seconds to every startup — paid again on each of the ~36
+        # watchdog restarts a day.
+        yield blob[i:i + 6], blob[i + 6], blob[i + BLE_HEAD_SIZE:i + ln]
+        i += ln
+
+
 class Log:
     def __init__(self):
         self.wifi_seen = set()
         self.ble_seen = set()
+        # label -> how many non-public addresses have worn it on disk
+        self.label_counts = {}
         self.pending_wifi = []
         self.pending_ble = []
         self.first_seen = 0
@@ -82,19 +162,27 @@ class Log:
     # ---- load ---------------------------------------------------------------
 
     def load(self):
-        """Read back the keys already on disk so a restart does not duplicate."""
-        for path, size, target in ((WIFI_PATH, WIFI_SIZE, self.wifi_seen),
-                                   (BLE_PATH, BLE_SIZE, self.ble_seen)):
+        """Read back the keys already on disk so a restart does not duplicate.
+
+        The Bluetooth pass also tallies labels per non-public address, because
+        the share rule that caps a rotating label at eight lives in RAM and the
+        watchdog now restarts the app every fifteen minutes or so. Doing it in
+        this walk rather than a second one matters: a separate pass took import
+        from 4.5s to 9s, and every one of those restarts pays it.
+        """
+        for key in _keys(WIFI_PATH, WIFI_HEAD_SIZE):
+            self.wifi_seen.add(key)
+        counts = self.label_counts
+        for key, kind, raw in _ble_walk():
+            self.ble_seen.add(key)
+            if kind == 0 or not raw:        # public addresses never count
+                continue
             try:
-                with open(path, "rb") as f:
-                    while True:
-                        chunk = f.read(size * 64)
-                        if not chunk:
-                            break
-                        for i in range(0, len(chunk) - size + 1, size):
-                            target.add(chunk[i:i + 6])
-            except OSError:
-                pass
+                label = bytes(raw).decode("utf-8").rstrip("\x00")
+            except UnicodeError:
+                continue                    # a damaged label is not counted
+            if label:
+                counts[label] = counts.get(label, 0) + 1
         try:
             with open(META_PATH, "rb") as f:
                 self.first_seen = struct.unpack("<I", f.read(4))[0]
@@ -118,9 +206,10 @@ class Log:
             # Still counted for the session, just not committed to disk.
             self.unsaved += 1
             return False
-        self.pending_wifi.append(struct.pack(
-            WIFI_FMT, bssid, chan & 0xFF, max(-128, min(127, rssi)),
-            sec & 0xFF, first, _trunc(ssid, 32)))
+        body = struct.pack(WIFI_HEAD, bssid, chan & 0xFF,
+                           max(-128, min(127, rssi)), sec & 0xFF, first)
+        body += _trunc(ssid, MAX_SSID)
+        self.pending_wifi.append(bytes([len(body)]) + body)
         return True
 
     def add_ble(self, addr, kind, rssi, company, first, label):
@@ -130,10 +219,12 @@ class Log:
         if self.full or len(self.ble_seen) > MAX_BLE:
             self.unsaved += 1
             return False
-        self.pending_ble.append(struct.pack(
-            BLE_FMT, addr, kind & 0xFF, max(-128, min(127, rssi)),
-            NO_COMPANY if company is None else company & 0xFFFF,
-            first, _trunc(label, 26)))
+        body = struct.pack(BLE_HEAD, addr, kind & 0xFF,
+                           max(-128, min(127, rssi)),
+                           NO_COMPANY if company is None else company & 0xFFFF,
+                           first)
+        body += _trunc(label, MAX_LABEL)
+        self.pending_ble.append(bytes([len(body)]) + body)
         return True
 
     @property
@@ -141,6 +232,18 @@ class Log:
         return bool(self.pending_wifi or self.pending_ble)
 
     # ---- flush --------------------------------------------------------------
+
+    def _append(self, path, records):
+        exists = True
+        try:
+            os.stat(path)
+        except OSError:
+            exists = False
+        with open(path, "ab") as f:
+            if not exists:
+                f.write(MAGIC)
+            for rec in records:
+                f.write(rec)
 
     def flush(self, now=0):
         """Append what is new. Called on a timer, not per sighting, to spare
@@ -155,13 +258,9 @@ class Log:
         try:
             _ensure_dir()
             if self.pending_wifi:
-                with open(WIFI_PATH, "ab") as f:
-                    for rec in self.pending_wifi:
-                        f.write(rec)
+                self._append(WIFI_PATH, self.pending_wifi)
             if self.pending_ble:
-                with open(BLE_PATH, "ab") as f:
-                    for rec in self.pending_ble:
-                        f.write(rec)
+                self._append(BLE_PATH, self.pending_ble)
             if not self.first_seen and now:
                 self.first_seen = now
             with open(META_PATH, "wb") as f:
@@ -179,6 +278,8 @@ class Log:
     def erase(self):
         self.wifi_seen = set()
         self.ble_seen = set()
+        # label -> how many non-public addresses have worn it on disk
+        self.label_counts = {}
         self.pending_wifi = []
         self.pending_ble = []
         self.first_seen = 0
