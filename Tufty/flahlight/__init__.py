@@ -1,6 +1,3 @@
-import gc
-
-
 badge.mode(LORES | VSYNC)
 
 selected_light = 0
