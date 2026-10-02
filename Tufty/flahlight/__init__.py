@@ -1,5 +1,4 @@
 import gc
-import os
 
 
 badge.mode(LORES | VSYNC)
