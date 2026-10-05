@@ -1,0 +1,728 @@
+# Profile Hub for Pimoroni Tufty 2350 / Badgeware.
+# ruff: noqa: BLE001
+# Copyright (c) 2026 KiloGramowy
+#
+# Runtime layout, drawing proportions, and navigation flow follow the
+# physically tested Tufty 2350 build. Configuration and QR data are generated
+# by build_profile.py for public use.
+
+try:
+    import os
+    import sys
+except ImportError:  # pragma: no cover - host safety.
+    os = None
+    sys = None
+
+
+def _bootstrap_app_dir():
+    if os is None or sys is None:
+        return
+    for candidate in (
+        "/apps/profile_hub",
+        "/system/apps/profile_hub",
+        "/system/contrib/profile_hub",
+    ):
+        try:
+            os.stat(candidate)
+        except OSError:
+            continue
+        try:
+            os.chdir(candidate)
+        except OSError:
+            pass
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
+        return
+
+
+_bootstrap_app_dir()
+
+try:
+    from . import profile_config as cfg
+    from .generated_qr import QR_CODES
+    from . import persistent_cache
+    from . import wdgwars
+    from . import wigle
+except ImportError:  # Badgeware loads app-folder modules as top-level files.
+    import profile_config as cfg
+    from generated_qr import QR_CODES
+    import persistent_cache
+    import wdgwars
+    import wigle
+
+
+try:
+    badge.mode(HIRES | VSYNC)
+    screen.antialias = image.X4
+    BADGEWARE_READY = True
+except Exception:
+    BADGEWARE_READY = False
+
+
+W = 320
+H = 240
+if BADGEWARE_READY:
+    W = screen.width
+    H = screen.height
+    MONA = font.load("/system/assets/fonts/MonaSans-Medium.af")
+    PIXEL = font.winds
+else:
+    MONA = None
+    PIXEL = None
+
+
+if BADGEWARE_READY:
+    BG = color.rgb(6, 10, 14)
+    BG_SOFT = color.rgb(10, 17, 22)
+    PANEL = color.rgb(14, 23, 28)
+    PANEL_2 = color.rgb(22, 35, 42)
+    LINE = color.rgb(36, 56, 64)
+    WHITE = color.rgb(238, 242, 236)
+    OFF_WHITE = color.rgb(200, 209, 201)
+    DIM = color.rgb(118, 140, 136)
+    BLACK = color.rgb(0, 0, 0)
+    PCB_GREEN = color.rgb(52, 102, 74)
+    PCB_GREEN_BRIGHT = color.rgb(92, 166, 108)
+    GOLD = color.rgb(214, 172, 84)
+    CYAN = color.rgb(74, 164, 224)
+    RED = color.rgb(205, 78, 78)
+    ORANGE = color.rgb(221, 128, 64)
+    STATUS_GREEN = color.rgb(96, 196, 120)
+    BLUE = color.rgb(86, 134, 220)
+else:
+    BG = BG_SOFT = PANEL = PANEL_2 = LINE = None
+    WHITE = OFF_WHITE = DIM = BLACK = None
+    PCB_GREEN = PCB_GREEN_BRIGHT = GOLD = CYAN = RED = ORANGE = STATUS_GREEN = BLUE = None
+
+
+ACCENTS = {
+    "cyan": CYAN,
+    "red": RED,
+    "orange": ORANGE,
+    "green": PCB_GREEN_BRIGHT,
+    "gold": GOLD,
+    "blue": BLUE,
+}
+
+LINKS_BY_ID = {}
+for item in cfg.LINKS:
+    LINKS_BY_ID[item["id"]] = item
+
+PAGES = list(cfg.PAGE_ORDER)
+if not PAGES or PAGES[0] != "main":
+    PAGES = ["main"] + [x for x in PAGES if x != "main"]
+
+page_index = 0
+last_input = -999999
+last_page_id = None
+
+wdg_data = None
+wdg_status = "IDLE"
+wdg_last_sync = -cfg.WDGWARS_REFRESH_MS
+wdg_last_attempt = -getattr(cfg, "WDGWARS_PAGE_ENTRY_COOLDOWN_MS", cfg.RETRY_MS)
+
+wigle_data = None
+wigle_status = "IDLE"
+wigle_last_sync = -cfg.WIGLE_REFRESH_MS
+wigle_last_attempt = -getattr(cfg, "WIGLE_PAGE_ENTRY_COOLDOWN_MS", cfg.RETRY_MS)
+wdg_cache_last_write = None
+wigle_cache_last_write = None
+
+AUTO_BRIGHTNESS_DEFAULT = 0.70
+AUTO_BRIGHTNESS_SAMPLE_MS = 250
+AUTO_BRIGHTNESS_SMOOTHING = 0.35
+AUTO_BRIGHTNESS_HYSTERESIS = 0.025
+AUTO_BRIGHTNESS_CURVE = (
+    (0, 0.22),
+    (80, 0.22),
+    (300, 0.32),
+    (1000, 0.45),
+    (2500, 0.58),
+    (5000, 0.70),
+    (12000, 0.88),
+    (25000, 1.0),
+)
+
+auto_brightness_last_sample = -AUTO_BRIGHTNESS_SAMPLE_MS
+auto_brightness_smoothed = AUTO_BRIGHTNESS_DEFAULT
+auto_brightness_applied = AUTO_BRIGHTNESS_DEFAULT
+
+
+def _wdg_cooldown_ms():
+    return getattr(cfg, "WDGWARS_PAGE_ENTRY_COOLDOWN_MS", cfg.RETRY_MS)
+
+
+def _wigle_cooldown_ms():
+    return getattr(cfg, "WIGLE_PAGE_ENTRY_COOLDOWN_MS", cfg.RETRY_MS)
+
+
+def load_persistent_stats():
+    global wdg_data, wdg_status, wigle_data, wigle_status
+
+    if getattr(cfg, "WDGWARS_API_KEY", ""):
+        try:
+            cached = persistent_cache.load_integration("wdgwars")
+        except Exception:
+            cached = None
+        if cached is not None:
+            wdg_data = cached
+            wdg_status = "CACHED"
+
+    if getattr(cfg, "WIGLE_API_NAME", "") and getattr(cfg, "WIGLE_API_TOKEN", ""):
+        try:
+            cached = persistent_cache.load_integration("wigle")
+        except Exception:
+            cached = None
+        if cached is not None:
+            wigle_data = cached
+            wigle_status = "CACHED"
+
+
+def persist_wdgwars(now):
+    global wdg_cache_last_write
+
+    try:
+        wdg_cache_last_write, _ = persistent_cache.save_integration(
+            "wdgwars",
+            wdg_data,
+            now,
+            wdg_cache_last_write,
+        )
+    except Exception:
+        pass
+
+
+def persist_wigle(now):
+    global wigle_cache_last_write
+
+    try:
+        wigle_cache_last_write, _ = persistent_cache.save_integration(
+            "wigle",
+            wigle_data,
+            now,
+            wigle_cache_last_write,
+        )
+    except Exception:
+        pass
+
+
+def _clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+
+def _brightness_bounds():
+    low = float(getattr(cfg, "AUTO_BRIGHTNESS_MIN", 0.22))
+    high = float(getattr(cfg, "AUTO_BRIGHTNESS_MAX", 1.0))
+    if high < low:
+        high = low
+    return low, high
+
+
+def brightness_for_light_level(raw):
+    raw = int(raw)
+    minimum, maximum = _brightness_bounds()
+
+    if raw <= AUTO_BRIGHTNESS_CURVE[0][0]:
+        return _clamp(AUTO_BRIGHTNESS_CURVE[0][1], minimum, maximum)
+
+    previous_raw, previous_value = AUTO_BRIGHTNESS_CURVE[0]
+    for next_raw, next_value in AUTO_BRIGHTNESS_CURVE[1:]:
+        if raw <= next_raw:
+            span = next_raw - previous_raw
+            if span <= 0:
+                value = next_value
+            else:
+                ratio = float(raw - previous_raw) / float(span)
+                value = previous_value + (next_value - previous_value) * ratio
+            return _clamp(value, minimum, maximum)
+        previous_raw, previous_value = next_raw, next_value
+
+    return _clamp(AUTO_BRIGHTNESS_CURVE[-1][1], minimum, maximum)
+
+
+def auto_brightness_enabled():
+    return bool(getattr(cfg, "AUTO_BRIGHTNESS_ENABLED", True))
+
+
+def apply_startup_brightness():
+    if not BADGEWARE_READY or not auto_brightness_enabled():
+        return False
+    try:
+        display.backlight(auto_brightness_applied)
+        return True
+    except (AttributeError, OSError, RuntimeError):
+        return False
+
+
+def update_auto_brightness(now):
+    global auto_brightness_last_sample, auto_brightness_smoothed, auto_brightness_applied
+
+    if not auto_brightness_enabled():
+        return False
+    if now - auto_brightness_last_sample < AUTO_BRIGHTNESS_SAMPLE_MS:
+        return False
+
+    auto_brightness_last_sample = now
+
+    try:
+        raw = badge.light_level()
+    except (AttributeError, OSError, RuntimeError):
+        return False
+
+    target = brightness_for_light_level(raw)
+    auto_brightness_smoothed = (
+        auto_brightness_smoothed * (1.0 - AUTO_BRIGHTNESS_SMOOTHING)
+        + target * AUTO_BRIGHTNESS_SMOOTHING
+    )
+    auto_brightness_smoothed = _clamp(auto_brightness_smoothed, *_brightness_bounds())
+
+    if abs(auto_brightness_smoothed - auto_brightness_applied) < AUTO_BRIGHTNESS_HYSTERESIS:
+        return False
+
+    try:
+        display.backlight(auto_brightness_smoothed)
+    except (AttributeError, OSError, RuntimeError):
+        return False
+
+    auto_brightness_applied = auto_brightness_smoothed
+    return True
+
+
+apply_startup_brightness()
+load_persistent_stats()
+
+
+def vmeasure(text, size):
+    screen.font = MONA
+    return int(screen.measure_text(str(text), size)[0])
+
+
+def vtext(text, x, y, size, pen=WHITE):
+    screen.font = MONA
+    screen.pen = pen
+    screen.text(str(text), int(x), int(y), size)
+
+
+def vright(text, right_x, y, size, pen=WHITE):
+    vtext(text, right_x - vmeasure(text, size), y, size, pen)
+
+
+def fit(text, max_width, size):
+    text = str(text)
+    if vmeasure(text, size) <= max_width:
+        return text
+    while text and vmeasure(text + "...", size) > max_width:
+        text = text[:-1]
+    return text + "..."
+
+
+def fmt_num(value):
+    try:
+        text = str(int(value))
+    except Exception:
+        return "--"
+    result = ""
+    while len(text) > 3:
+        result = "," + text[-3:] + result
+        text = text[:-3]
+    return text + result
+
+
+def rank_text(value):
+    try:
+        value = int(value)
+        return "#" + str(value) if value > 0 else "--"
+    except Exception:
+        return "--"
+
+
+def clear():
+    screen.pen = BG
+    screen.clear()
+
+    screen.pen = BG_SOFT
+    for x in range(0, W, 32):
+        screen.rectangle(x, 0, 1, H)
+    for y in range(0, H, 32):
+        screen.rectangle(0, y, W, 1)
+
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(12, 11, 38, 2)
+    screen.pen = GOLD
+    screen.rectangle(52, 11, 16, 2)
+    screen.pen = OFF_WHITE
+    screen.rectangle(W - 44, 11, 32, 2)
+
+
+def outline(x, y, w, h, accent=PCB_GREEN_BRIGHT, strong=False):
+    screen.pen = PANEL
+    screen.rectangle(x, y, w, h)
+
+    screen.pen = LINE
+    screen.rectangle(x, y, w, 1)
+    screen.rectangle(x, y + h - 1, w, 1)
+    screen.rectangle(x, y, 1, h)
+    screen.rectangle(x + w - 1, y, 1, h)
+
+    thickness = 2 if strong else 1
+    screen.pen = accent
+    screen.rectangle(x, y, min(48, w), thickness)
+    screen.rectangle(x + w - min(22, w), y + h - thickness, min(22, w), thickness)
+
+
+def footer():
+    screen.font = PIXEL
+    screen.pen = DIM
+    screen.text("A BACK", 12, 221)
+    screen.text("B NEXT", 137, 221)
+    screen.text("C HOME", 266, 221)
+
+    total = len(PAGES)
+    start = int((W - (total * 8 + max(0, total - 1) * 4)) / 2)
+    for i in range(total):
+        screen.pen = PCB_GREEN_BRIGHT if i == page_index else LINE
+        screen.rectangle(start + i * 12, 235, 8, 2)
+
+
+def draw_xiao_c5(x, y, scale=1):
+    bw = 54 * scale
+    bh = 74 * scale
+
+    screen.pen = PCB_GREEN
+    screen.rectangle(x, y, bw, bh)
+
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(x, y, bw, 2)
+    screen.rectangle(x, y + bh - 2, bw, 2)
+    screen.rectangle(x, y, 2, bh)
+    screen.rectangle(x + bw - 2, y, 2, bh)
+
+    screen.pen = OFF_WHITE
+    screen.rectangle(x + 17 * scale, y - 3 * scale, 20 * scale, 7 * scale)
+    screen.pen = BG
+    screen.rectangle(x + 21 * scale, y - 1 * scale, 12 * scale, 3 * scale)
+
+    screen.pen = PANEL_2
+    screen.rectangle(x + 13 * scale, y + 18 * scale, 28 * scale, 20 * scale)
+    screen.pen = GOLD
+    screen.rectangle(x + 13 * scale, y + 18 * scale, 28 * scale, 1)
+    screen.rectangle(x + 13 * scale, y + 37 * scale, 28 * scale, 1)
+    vtext("C5", x + 19 * scale, y + 23 * scale, 10, OFF_WHITE)
+
+    screen.pen = OFF_WHITE
+    screen.rectangle(x + 16 * scale, y + 46 * scale, 10 * scale, 6 * scale)
+    screen.rectangle(x + 30 * scale, y + 46 * scale, 8 * scale, 8 * scale)
+
+    screen.pen = GOLD
+    py = y + 12 * scale
+    for i in range(7):
+        screen.rectangle(x - 3 * scale, py + i * 8 * scale, 5 * scale, 4 * scale)
+        screen.rectangle(x + bw - 2 * scale, py + i * 8 * scale, 5 * scale, 4 * scale)
+
+
+def draw_xiao_small(x, y):
+    screen.pen = PCB_GREEN
+    screen.rectangle(x, y, 28, 36)
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(x, y, 28, 1)
+    screen.rectangle(x, y + 35, 28, 1)
+    screen.rectangle(x, y, 1, 36)
+    screen.rectangle(x + 27, y, 1, 36)
+
+    screen.pen = OFF_WHITE
+    screen.rectangle(x + 8, y - 2, 12, 4)
+
+    screen.pen = PANEL_2
+    screen.rectangle(x + 7, y + 10, 14, 10)
+
+    screen.pen = GOLD
+    for i in range(4):
+        screen.rectangle(x - 2, y + 8 + i * 7, 4, 3)
+        screen.rectangle(x + 26, y + 8 + i * 7, 4, 3)
+
+    vtext("C5", x + 9, y + 13, 7, OFF_WHITE)
+
+
+def draw_main():
+    clear()
+
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(20, 28, 3, 156)
+    screen.pen = GOLD
+    screen.rectangle(20, 28, 3, 30)
+
+    draw_xiao_c5(32, 36, 1)
+
+    vtext(cfg.NAME_LINE1, 112, 36, 24, OFF_WHITE)
+    vtext(fit(cfg.NAME_LINE2, W - 124, 28), 112, 66, 28, CYAN)
+    vtext(fit(cfg.JOB_TITLE, W - 60, 16), 30, 124, 16, OFF_WHITE)
+
+    screen.pen = LINE
+    screen.rectangle(30, 151, W - 60, 1)
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(30, 151, 78, 3)
+    screen.pen = GOLD
+    screen.rectangle(110, 151, 22, 3)
+
+    vtext(fit(cfg.PRIMARY_LABEL, W - 60, 20), 30, 166, 20, PCB_GREEN_BRIGHT)
+    vtext(fit(cfg.TAGLINE, W - 60, 12), 30, 194, 12, DIM)
+    vright("Built by KiloGramowy", W - 20, 208, 8, DIM)
+
+    footer()
+
+
+def draw_qr_matrix(n, rows, x, y, scale):
+    span = n * scale
+    quiet = 4 * scale
+
+    screen.pen = WHITE
+    screen.rectangle(x - quiet, y - quiet, span + quiet * 2, span + quiet * 2)
+
+    screen.pen = BLACK
+    for row in range(n):
+        bits = int(rows[row], 16)
+        for col in range(n):
+            if bits & (1 << (n - 1 - col)):
+                screen.rectangle(x + col * scale, y + row * scale, scale, scale)
+
+
+def draw_link(page_id):
+    clear()
+
+    link = LINKS_BY_ID.get(page_id)
+    qr = QR_CODES.get(page_id)
+
+    if not link or not qr:
+        vtext("QR DATA MISSING", 22, 30, 22, RED)
+        vtext(page_id, 22, 62, 14, DIM)
+        footer()
+        return
+
+    accent = ACCENTS.get(link.get("accent", "cyan"), CYAN)
+    n, rows = qr
+
+    vtext(fit(link["title"], 145, 23), 22, 24, 23, accent)
+    vtext(fit(link["label"], 145, 14), 22, 54, 14, OFF_WHITE)
+    vtext("SCAN TO OPEN", 22, 76, 11, DIM)
+
+    screen.pen = PCB_GREEN_BRIGHT
+    screen.rectangle(22, 98, 42, 2)
+    screen.pen = GOLD
+    screen.rectangle(66, 98, 16, 2)
+
+    max_side = 132
+    scale = max(1, max_side // n)
+    span = n * scale
+    quiet = 4 * scale
+    total = span + quiet * 2
+    qx = W - 22 - total + quiet
+    qy = 50 + quiet
+    draw_qr_matrix(n, rows, qx, qy, scale)
+
+    draw_xiao_small(31, 118)
+    vtext("PROFILE", 27, 166, 15, OFF_WHITE)
+
+    footer()
+
+
+def rank_card(x, y, w, label, value, accent, hero=False):
+    h = 51 if hero else 45
+    outline(x, y, w, h, accent, hero)
+    vtext(label, x + 8, y + 7, 11, accent if hero else DIM)
+    if hero:
+        vright(rank_text(value), x + w - 8, y + 18, 27, OFF_WHITE)
+    else:
+        vright(rank_text(value), x + w - 8, y + 18, 18, OFF_WHITE)
+
+
+def stat_card(x, y, w, label, value, accent):
+    outline(x, y, w, 52, accent, False)
+    vtext(label, x + 7, y + 7, 10, accent)
+    vtext(fit(fmt_num(value), w - 14, 17), x + 7, y + 25, 17, OFF_WHITE)
+
+
+def status_line(status):
+    pen = STATUS_GREEN if status == "LIVE" else ORANGE
+    screen.pen = pen
+    screen.rectangle(W - 74, 221, 5, 5)
+    vtext(status, W - 64, 217, 9, pen)
+
+
+def draw_wdgwars():
+    clear()
+
+    if not cfg.WDGWARS_API_KEY:
+        draw_xiao_small(24, 26)
+        vtext("WDGWARS", 68, 24, 22, CYAN)
+        vtext("SET API KEY", 24, 86, 20, ORANGE)
+        vtext("Run builder with credentials.json", 24, 120, 12, DIM)
+        footer()
+        return
+
+    d = wdg_data or {}
+
+    draw_xiao_small(24, 22)
+    username = d.get("username") or "WDGWARS"
+    vtext(fit(str(username).upper(), 150, 21), 64, 18, 21, CYAN)
+
+    meta = ""
+    if d.get("gang"):
+        meta = str(d.get("gang"))
+    if d.get("role"):
+        meta += (" // " if meta else "") + str(d.get("role")).upper()
+    if meta:
+        vtext(fit(meta, W - 78, 11), 64, 47, 11, OFF_WHITE)
+
+    sub = ""
+    if d.get("country"):
+        sub = str(d.get("country")).upper()
+    if d.get("since"):
+        sub += (" // " if sub else "") + "SINCE " + str(d.get("since"))[:10]
+    if sub:
+        vtext(fit(sub, 172, 10), 64, 66, 10, DIM)
+
+    if d.get("patron"):
+        vright("PATRON", W - 15, 65, 10, STATUS_GREEN)
+
+    vtext("WORLD RANK", 15, 89, 11, DIM)
+    rank_card(15, 104, 72, "TODAY", d.get("rank_day"), GOLD, False)
+    rank_card(94, 104, 70, "WEEK", d.get("rank_week"), CYAN, False)
+    rank_card(171, 98, W - 186, "ALL-TIME", d.get("rank_all"), PCB_GREEN_BRIGHT, True)
+
+    gap = 6
+    sw = (W - 30 - gap * 2) // 3
+    sy = 160
+    stat_card(15, sy, sw, "WI-FI", d.get("wifi"), PCB_GREEN_BRIGHT)
+    stat_card(15 + sw + gap, sy, sw, "BLUETOOTH", d.get("ble"), GOLD)
+    stat_card(15 + (sw + gap) * 2, sy, sw, "AIRCRAFTS", d.get("aircraft"), CYAN)
+
+    status_line(wdg_status)
+    footer()
+
+
+def draw_wigle():
+    clear()
+
+    if not cfg.WIGLE_API_NAME or not cfg.WIGLE_API_TOKEN:
+        draw_xiao_small(24, 26)
+        vtext("WIGLE.NET", 68, 24, 22, CYAN)
+        vtext("SET API CREDENTIALS", 24, 86, 18, ORANGE)
+        vtext("Run builder with credentials.json", 24, 120, 12, DIM)
+        footer()
+        return
+
+    d = wigle_data or {}
+
+    draw_xiao_small(24, 22)
+    username = d.get("username") or "WIGLE.NET"
+    vtext(fit(str(username), 150, 21), 64, 18, 21, CYAN)
+    vright("WiGLE.NET", W - 15, 23, 11, GOLD)
+
+    if d.get("join_date"):
+        vtext("SINCE " + str(d.get("join_date")), 64, 49, 10, DIM)
+
+    vtext("RANK", 15, 82, 11, DIM)
+    rank_card(15, 97, 118, "GLOBAL", d.get("global_rank"), CYAN, True)
+    rank_card(140, 103, W - 155, "MONTH", d.get("month_rank"), GOLD, False)
+
+    gap = 6
+    sw = (W - 30 - gap * 2) // 3
+    sy = 158
+    stat_card(15, sy, sw, "WI-FI", d.get("wifi"), PCB_GREEN_BRIGHT)
+    stat_card(15 + sw + gap, sy, sw, "BLUETOOTH", d.get("bluetooth"), GOLD)
+    stat_card(15 + (sw + gap) * 2, sy, sw, "CELL", d.get("cell"), CYAN)
+
+    status_line(wigle_status)
+    footer()
+
+
+def refresh_current(now, entered=False):
+    global wdg_data, wdg_status, wdg_last_sync, wdg_last_attempt
+    global wigle_data, wigle_status, wigle_last_sync, wigle_last_attempt
+
+    current = PAGES[page_index]
+
+    if current == "wdgwars" and cfg.WDGWARS_ENABLED:
+        due = entered or (now - wdg_last_sync > cfg.WDGWARS_REFRESH_MS)
+        if due and (now - wdg_last_attempt > _wdg_cooldown_ms()):
+            wdg_last_attempt = now
+            status, data = wdgwars.fetch(cfg.WDGWARS_API_KEY, wdg_data)
+            wdg_status = status
+            if data is not None:
+                wdg_data = data
+            if status in ("OFFLINE", "ERROR") and wdg_data is not None:
+                wdg_status = "CACHED"
+                status = "CACHED"
+            if status == "LIVE":
+                persist_wdgwars(now)
+            if status in ("LIVE", "ERROR", "NO KEY", "OFFLINE", "CACHED"):
+                wdg_last_sync = now
+
+    elif current == "wigle" and cfg.WIGLE_ENABLED:
+        due = entered or (now - wigle_last_sync > cfg.WIGLE_REFRESH_MS)
+        if due and (now - wigle_last_attempt > _wigle_cooldown_ms()):
+            wigle_last_attempt = now
+            status, data = wigle.fetch(cfg.WIGLE_API_NAME, cfg.WIGLE_API_TOKEN, wigle_data)
+            wigle_status = status
+            if data is not None:
+                wigle_data = data
+            if status in ("OFFLINE", "ERROR") and wigle_data is not None:
+                wigle_status = "CACHED"
+                status = "CACHED"
+            if status == "LIVE":
+                persist_wigle(now)
+            if status in ("LIVE", "ERROR", "NO KEY", "OFFLINE", "CACHED"):
+                wigle_last_sync = now
+
+
+def draw():
+    page_id = PAGES[page_index]
+    if page_id == "main":
+        draw_main()
+    elif page_id == "wdgwars":
+        draw_wdgwars()
+    elif page_id == "wigle":
+        draw_wigle()
+    else:
+        draw_link(page_id)
+
+
+def update():
+    global page_index, last_input, last_page_id
+
+    now = badge.ticks
+    old_page = PAGES[page_index]
+
+    update_auto_brightness(now)
+
+    if now - last_input > cfg.INPUT_DELAY_MS:
+        if badge.pressed(BUTTON_C):
+            page_index = 0
+            last_input = now
+        elif badge.pressed(BUTTON_A):
+            if page_index > 0:
+                page_index -= 1
+            last_input = now
+        elif badge.pressed(BUTTON_B):
+            if page_index < len(PAGES) - 1:
+                page_index += 1
+            last_input = now
+
+    current = PAGES[page_index]
+    entered = current != old_page or current != last_page_id
+    last_page_id = current
+
+    refresh_current(now, entered)
+    draw()
+
+
+def on_exit():
+    pass
+
+
+if BADGEWARE_READY:
+    run(update)
