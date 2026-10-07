@@ -110,11 +110,7 @@ def get_connection_details():
                 sys.path.pop(0)
             except IndexError:
                 pass
-    except ImportError:
-        WIFI_PASSWORD = None
-        WIFI_SSID = None
-        TWITCH_UUID = None
-    except Exception:  # noqa: BLE001
+    except (ImportError, SyntaxError):
         WIFI_PASSWORD = None
         WIFI_SSID = None
         TWITCH_UUID = None
@@ -202,7 +198,7 @@ def async_fetch_to_disk(url, file, force_update=False, timeout_ms=25000, headers
         with open(file, "wb") as f:
             while True:
                 if timeout_ms is not None and (badge.ticks - start_ticks) > timeout_ms:
-                    raise TimeoutError(f"Fetch timed out after {timeout_ms} ms")
+                    raise OSError(f"Fetch timed out after {timeout_ms} ms")
 
                 if (length := response.readinto(data)) == 0:
                     break
@@ -230,8 +226,6 @@ def async_fetch_to_disk(url, file, force_update=False, timeout_ms=25000, headers
                 os.remove(file)
         except OSError:
             pass
-        if isinstance(e, TimeoutError):
-            raise
         raise RuntimeError(f"Fetch from {url} to {file} failed. {e}") from e
 
 
@@ -255,7 +249,7 @@ def get_streamer_data(user, force_update=False):
             timeout_ms=25000,
             headers=headers
         )
-    except Exception as e:  # noqa: BLE001
+    except RuntimeError as e:
         error_msg = str(e)
         if "401_UNAUTHORIZED" in error_msg:
             message("Auth error - invalid UUID")
@@ -313,7 +307,7 @@ def get_streamer_data(user, force_update=False):
 
         del data
         gc.collect()
-    except Exception as e:  # noqa: BLE001
+    except (AttributeError, OSError, TypeError, ValueError) as e:
         message(f"Failed to parse API data: {e}")
         user.display_name = "Parse Error"
         user.user_id = None
@@ -342,7 +336,7 @@ def get_avatar(user, force_update=False):
         else:
             message("Avatar file not found after download")
             user.avatar = False
-    except Exception as e:  # noqa: BLE001
+    except (MemoryError, OSError, RuntimeError, TypeError, ValueError) as e:
         message(f"Failed to get avatar: {e}")
         user.avatar = False
 
@@ -581,7 +575,7 @@ class TwitchUser:
         if self.avatar:
             try:
                 screen.blit(self.avatar, 5, 37)
-            except Exception:  # noqa: BLE001
+            except (TypeError, ValueError):
                 draw_default_avatar()
         else:
             draw_default_avatar()
@@ -700,7 +694,7 @@ class TwitchUser:
                 next(self._task)
             except StopIteration:
                 self._task = None
-            except Exception:  # noqa: BLE001
+            except (AttributeError, MemoryError, OSError, RuntimeError, TypeError, ValueError):
                 self._task = None
                 handle = "fetch error"
 
@@ -752,7 +746,7 @@ class TwitchUser:
             if self.avatar and not isinstance(self.avatar, bool):
                 try:
                     screen.blit(self.avatar, vec2(5, 37))
-                except Exception:  # noqa: BLE001
+                except (TypeError, ValueError):
                     draw_default_avatar()
             else:
                 draw_default_avatar()
@@ -1032,7 +1026,7 @@ def load_cached_data():
                 message("Loaded cached API data")
             else:
                 message(f"Cached data has error: {data.get('message', 'Unknown')}")
-        except Exception as e:  # noqa: BLE001
+        except (AttributeError, OSError, TypeError, ValueError) as e:
             message(f"Failed to load cached data: {e}")
 
     # Try to load avatar
@@ -1040,7 +1034,7 @@ def load_cached_data():
         try:
             user.avatar = image.load("/twitch_avatar.png")
             message("Loaded cached avatar")
-        except Exception as e:  # noqa: BLE001
+        except (MemoryError, OSError, RuntimeError, ValueError) as e:
             message(f"Failed to load cached avatar: {e}")
             user.avatar = False  # Mark as failed so it can be retried
     else:
