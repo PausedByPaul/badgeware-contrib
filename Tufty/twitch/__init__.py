@@ -41,14 +41,10 @@ small_font = font.ark
 large_font = font.absolute
 
 WIFI_TIMEOUT = 60
-POWER_SAVE_TIMEOUT = 30000
 
 # Badge API endpoint (unified Twitch data)
 BADGE_API_URL = "https://badge.pausedbypaul.net/api/streamer/{uuid}"
 AVATAR_PROXY = "https://wsrv.nl/?url={avatar_url}&w=55&output=png"
-
-# Display rotation settings (can be overridden in secrets.py)
-TWITCH_ROTATE_INTERVAL = 30  # seconds between view changes
 
 # View modes
 VIEW_AVATAR_FOLLOWERS = 0
@@ -56,7 +52,6 @@ VIEW_FOLLOWERS_LATEST = 1
 VIEW_LAST_SUB = 2
 VIEW_LAST_GIFT = 3
 VIEW_LAST_CHEER = 4
-NUM_VIEWS = 5
 
 WIFI_PASSWORD = None
 WIFI_SSID = None
@@ -91,7 +86,7 @@ def clear_cached_data():
 
 
 def get_connection_details():
-    global WIFI_PASSWORD, WIFI_SSID, TWITCH_UUID, TWITCH_ROTATE_INTERVAL
+    global WIFI_PASSWORD, WIFI_SSID, TWITCH_UUID
 
     if WIFI_SSID is not None and TWITCH_UUID is not None:
         return True
@@ -100,11 +95,6 @@ def get_connection_details():
         sys.path.insert(0, "/")
         try:
             from secrets import WIFI_PASSWORD, WIFI_SSID, TWITCH_UUID
-            # Try to import optional rotate interval
-            try:
-                from secrets import TWITCH_ROTATE_INTERVAL
-            except ImportError:
-                pass  # Use default
         finally:
             try:
                 sys.path.pop(0)
@@ -125,7 +115,7 @@ def get_connection_details():
 
 
 def wlan_start():
-    global wlan, ticks_start, connected, WIFI_PASSWORD, WIFI_SSID
+    global wlan, ticks_start, connected
 
     if ticks_start is None:
         ticks_start = badge.ticks
@@ -313,9 +303,6 @@ def get_streamer_data(user, force_update=False):
         user.user_id = None
 
 
-
-
-
 def get_avatar(user, force_update=False):
     if not user.avatar_url:
         message("No avatar URL available")
@@ -411,19 +398,6 @@ def scroll_text(text, max_width, y_pos, center_x=80):
         screen.text(text, x_pos, y_pos)
 
 
-def placeholder_if_none(text):
-    if text:
-        return text
-    old_seed = random.seed()
-    random.seed(int(badge.ticks / 100))
-    chars = "!\"£$%^&*()_+-={}[]:@~;'#<>?,./\\|"
-    text = ""
-    for _ in range(15):
-        text += random.choice(chars)
-    random.seed(old_seed)
-    return text
-
-
 class TwitchUser:
     def __init__(self):
         self.username = None
@@ -441,7 +415,6 @@ class TwitchUser:
         self.latest_gift_count = None
         self.latest_cheerer = None
         self.latest_cheer_amount = None
-        self.description = None
         self.is_live = False
         # Badge config settings
         self.auto_scroll = 30  # seconds between auto-scrolls, 0 = disabled
@@ -451,7 +424,6 @@ class TwitchUser:
         self.show_latest_cheer = True
         self._task = None
         self._force_update = False
-        self._data_ready = False
 
     def is_affiliate_or_partner(self):
         """Check if user is affiliate or partner (can have subscribers)."""
@@ -495,7 +467,6 @@ class TwitchUser:
         self.latest_gift_count = None
         self.latest_cheerer = None
         self.latest_cheer_amount = None
-        self.description = None
         self.is_live = False
         self.auto_scroll = 30  # seconds between auto-scrolls, 0 = disabled
         self.show_latest_sub = True
@@ -567,68 +538,8 @@ class TwitchUser:
             w, _ = screen.measure_text(status)
             screen.text(status, 80 - (w / 2), 18)
 
-    def draw_view_avatar_followers(self):
-        """View 1: Avatar with follower count."""
-        self.draw_header(self.display_name or self.username)
-
-        # Draw avatar on left
-        if self.avatar:
-            try:
-                screen.blit(self.avatar, 5, 37)
-            except (TypeError, ValueError):
-                draw_default_avatar()
-        else:
-            draw_default_avatar()
-
-        # Draw follower count on right
-        self.draw_stat("followers", self.total_followers, 88, 50)
-
-    def draw_view_followers_latest(self):
-        """View 2: Follower count with latest follower (no avatar)."""
-        self.draw_header(self.display_name or self.username)
-
-        # Centered follower count
-        self.draw_stat_centered("followers", self.total_followers, 35)
-
-        # Latest follower below
-        screen.font = small_font
-        screen.pen = twitch_purple_light
-        label = "latest follower"
-        w, _ = screen.measure_text(label)
-        screen.text(label, 80 - (w / 2), 70)
-
-        screen.font = large_font
-        screen.pen = white
-        follower_name = self.latest_follower if self.latest_follower else "..."
-        if len(follower_name) > 14:
-            follower_name = follower_name[:13] + "."
-        w, _ = screen.measure_text(follower_name)
-        screen.text(follower_name, 80 - (w / 2), 85)
-
-    def draw_view_last_sub(self):
-        """View 3: Last subscriber (no avatar)."""
-        self.draw_header(self.display_name or self.username)
-
-        # Centered sub count
-        self.draw_stat_centered("subscribers", self.total_subs, 35)
-
-        # Latest sub below
-        screen.font = small_font
-        screen.pen = twitch_purple_light
-        label = "latest subscriber"
-        w, _ = screen.measure_text(label)
-        screen.text(label, 80 - (w / 2), 70)
-
-        screen.font = large_font
-        screen.pen = white
-        sub_name = self.latest_sub if self.latest_sub else "..."
-        if len(sub_name) > 14:
-            sub_name = sub_name[:13] + "."
-        w, _ = screen.measure_text(sub_name)
-        screen.text(sub_name, 80 - (w / 2), 85)
-
     def draw(self, connected):
-        global current_view, last_view_change, wlan
+        global current_view, last_view_change
 
         # Draw animated purple gradient background
         if badge.battery_level() > 20 or badge.is_charging():
@@ -971,8 +882,6 @@ def draw_default_avatar():
 user = TwitchUser()
 # connected will be set by load_cached_data() based on what was actually loaded
 connected = False
-force_update = False
-last_press = 0  # Track last button press for power saving
 
 # Load connection details from secrets first
 get_connection_details()
@@ -1057,7 +966,7 @@ load_cached_data()
 
 
 def center_text(text, y):
-    w, h = screen.measure_text(text)
+    w, _ = screen.measure_text(text)
     screen.text(text, 80 - (w / 2), y)
 
 
@@ -1131,15 +1040,9 @@ def connection_error():
 
 
 def update():
-    global connected, force_update, auth_error, wifi_was_used, wlan, ticks_start, WIFI_SSID, WIFI_PASSWORD, last_press
+    global connected, wifi_was_used, wlan, ticks_start
 
-    force_update = False
-
-    # Power saving measures
-    if(any(badge.pressed(button) for button in [BUTTON_A, BUTTON_B, BUTTON_C, BUTTON_UP, BUTTON_DOWN])):
-        last_press = badge.ticks
-
-   # Check for force refresh (hold A + C)
+    # Check for force refresh (hold A + C)
     if badge.held(BUTTON_A) and badge.held(BUTTON_C):
         connected = False
         wifi_was_used = False
