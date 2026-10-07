@@ -86,11 +86,11 @@ def clear_cached_data():
             if file_exists(f):
                 os.remove(f)
                 message(f"Removed cached file: {f}")
-        except Exception as e:
+        except OSError as e:
             message(f"Failed to remove {f}: {e}")
 
 
-def get_connection_details(user):
+def get_connection_details():
     global WIFI_PASSWORD, WIFI_SSID, TWITCH_UUID, TWITCH_ROTATE_INTERVAL
 
     if WIFI_SSID is not None and TWITCH_UUID is not None:
@@ -108,13 +108,13 @@ def get_connection_details(user):
         finally:
             try:
                 sys.path.pop(0)
-            except Exception:
+            except IndexError:
                 pass
-    except ImportError as e:
+    except ImportError:
         WIFI_PASSWORD = None
         WIFI_SSID = None
         TWITCH_UUID = None
-    except Exception as e:
+    except Exception:  # noqa: BLE001
         WIFI_PASSWORD = None
         WIFI_SSID = None
         TWITCH_UUID = None
@@ -139,43 +139,43 @@ def wlan_start():
 
     if wlan is None:
         wlan = network.WLAN(network.STA_IF)
-    
+
     # Make sure WiFi is active
     if not wlan.active():
         wlan.active(True)
-    
+
     # Already connected?
     if wlan.isconnected():
         connected = True
         return True
-    
+
     # Need to connect - only call connect() once per attempt
     if ticks_start == badge.ticks:  # First frame of this connection attempt
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
         print("Connecting to WiFi...")
 
     connected = wlan.isconnected()
-    
+
     if badge.ticks - ticks_start < WIFI_TIMEOUT * 1000:
         if connected:
             print("WiFi connected!")
             return True
     elif not connected:
         return False
-    
+
     return True
 
 
 def wlan_disconnect():
     """Disconnect WiFi to save battery."""
     global wlan, ticks_start
-    
+
     if wlan is not None:
         try:
             wlan.disconnect()
             wlan.active(False)
             message("WiFi disconnected to save battery")
-        except Exception as e:
+        except OSError as e:
             message(f"WiFi disconnect error: {e}")
         finally:
             # Don't reset connected - that tracks whether we have data, not WiFi state
@@ -218,7 +218,7 @@ def async_fetch_to_disk(url, file, force_update=False, timeout_ms=25000, headers
         try:
             if file_exists(file):
                 os.remove(file)
-        except Exception:
+        except OSError:
             pass
         # Re-raise with preserved error info
         if "401" in error_str or "Unauthorized" in error_str:
@@ -228,7 +228,7 @@ def async_fetch_to_disk(url, file, force_update=False, timeout_ms=25000, headers
         try:
             if file_exists(file):
                 os.remove(file)
-        except Exception:
+        except OSError:
             pass
         if isinstance(e, TimeoutError):
             raise
@@ -245,7 +245,7 @@ def get_api_headers():
 def get_streamer_data(user, force_update=False):
     """Fetch all streamer data from unified badge API."""
     global auth_error
-    message(f"Getting Twitch data from badge API...")
+    message("Getting Twitch data from badge API...")
     try:
         headers = get_api_headers()
         yield from async_fetch_to_disk(
@@ -255,7 +255,7 @@ def get_streamer_data(user, force_update=False):
             timeout_ms=25000,
             headers=headers
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         error_msg = str(e)
         if "401_UNAUTHORIZED" in error_msg:
             message("Auth error - invalid UUID")
@@ -274,14 +274,14 @@ def get_streamer_data(user, force_update=False):
             content = f.read()
             message(f"API JSON: {content[:200]}")
             data = json.loads(content)
-        
+
         # Check for API error response
         if "error" in data:
             message(f"API Error: {data.get('message', 'Unknown error')}")
             user.display_name = "API Error"
             user.user_id = None
             return
-        
+
         # Parse unified API response
         user.username = data.get("handle")
         user.display_name = data.get("display_name", user.username)
@@ -298,7 +298,7 @@ def get_streamer_data(user, force_update=False):
         user.latest_cheerer = data.get("last_cheerer")
         user.latest_cheer_amount = data.get("last_cheer_amount")
         user.is_live = data.get("is_live", False)
-        
+
         # Parse badge config settings
         badge_config = data.get("badge_config", {})
         user.auto_scroll = badge_config.get("auto_scroll", 30)  # seconds, 0 = disabled
@@ -306,14 +306,14 @@ def get_streamer_data(user, force_update=False):
         user.show_latest_follower = badge_config.get("show_latest_follower", True)
         user.show_latest_gifted_sub = badge_config.get("show_latest_gifted_sub", True)
         user.show_latest_cheer = badge_config.get("show_latest_cheer", True)
-        
+
         message(f"Got user: {user.display_name}, followers: {user.total_followers}, subs: {user.total_subs}")
         message(f"Broadcaster type: {user.broadcaster_type}, avatar: {user.avatar_url[:50] if user.avatar_url else 'None'}")
         message(f"Badge config - auto_scroll: {user.auto_scroll}, show_follower: {user.show_latest_follower}, show_sub: {user.show_latest_sub}")
-        
+
         del data
         gc.collect()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         message(f"Failed to parse API data: {e}")
         user.display_name = "Parse Error"
         user.user_id = None
@@ -336,20 +336,20 @@ def get_avatar(user, force_update=False):
         proxy_url = AVATAR_PROXY.format(avatar_url=encoded_url)
         message(f"Avatar proxy URL: {proxy_url[:80]}...")
         yield from async_fetch_to_disk(proxy_url, avatar_path, force_update, timeout_ms=25000, headers=None)
-        
+
         if file_exists(avatar_path):
             user.avatar = image.load(avatar_path)
         else:
             message("Avatar file not found after download")
             user.avatar = False
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         message(f"Failed to get avatar: {e}")
         user.avatar = False
 
 
 def format_number(num):
     """Format numbers with k/m suffixes and 2 decimal places.
-    
+
     Examples:
         1234567 -> "1.23m"
         12345 -> "12.35k"
@@ -357,10 +357,9 @@ def format_number(num):
     """
     if num >= 1000000:
         return f"{num / 1000000:.2f}m"
-    elif num >= 1000:
+    if num >= 1000:
         return f"{num / 1000:.2f}k"
-    else:
-        return str(num)
+    return str(num)
 
 
 def fake_number():
@@ -372,19 +371,19 @@ def fake_username():
     prefixes = ["Cool", "Epic", "Pro", "Super", "Mega", "Ultra", "Twitch", "Stream", "Game", "Elite", "Ninja", "Gamer"]
     suffixes = ["Player", "Gamer", "King", "Queen", "Master", "Legend", "Pro", "Hero", "Wizard", "Ninja", "Boss", "Star"]
     numbers = ["", "42", "69", "420", "123", "999", "2000", "XD"]
-    
+
     # Use ticks for randomness
     seed_val = (badge.ticks // 500) % 1000  # Changes every 500ms
     prefix = prefixes[seed_val % len(prefixes)]
     suffix = suffixes[(seed_val * 7) % len(suffixes)]
     number = numbers[(seed_val * 13) % len(numbers)]
-    
+
     return prefix + suffix + number
 
 
 def scroll_text(text, max_width, y_pos, center_x=80):
     """Draw text that scrolls horizontally if too long.
-    
+
     Args:
         text: The text to display
         max_width: Maximum width before scrolling (in pixels)
@@ -392,7 +391,7 @@ def scroll_text(text, max_width, y_pos, center_x=80):
         center_x: Center X position (default 80 for screen center)
     """
     text_width, _ = screen.measure_text(text)
-    
+
     if text_width <= max_width:
         # Text fits, center it normally
         screen.text(text, center_x - (text_width / 2), y_pos)
@@ -402,17 +401,17 @@ def scroll_text(text, max_width, y_pos, center_x=80):
         overflow = text_width - max_width
         cycle_time = 3000  # Total time for one left-right-left cycle (ms)
         scroll_speed = (overflow * 2) / cycle_time  # pixels per ms
-        
+
         # Calculate current position in cycle
         cycle_pos = badge.ticks % cycle_time
-        
+
         if cycle_pos < cycle_time / 2:
             # Scrolling left (showing right side of text)
             scroll_offset = -(cycle_pos * scroll_speed)
         else:
             # Scrolling right (back to start)
             scroll_offset = -(overflow - ((cycle_pos - cycle_time / 2) * scroll_speed))
-        
+
         # Draw text with scroll offset
         x_pos = center_x - (max_width / 2) + scroll_offset
         screen.text(text, x_pos, y_pos)
@@ -459,31 +458,31 @@ class TwitchUser:
         self._task = None
         self._force_update = False
         self._data_ready = False
-    
+
     def is_affiliate_or_partner(self):
         """Check if user is affiliate or partner (can have subscribers)."""
         return self.broadcaster_type in ["affiliate", "partner"]
-    
+
     def get_enabled_views(self):
         """Get list of enabled view indices based on config."""
         views = [VIEW_AVATAR_FOLLOWERS]  # Always show avatar/stats view
-        
+
         # Add latest follower view if enabled
         if self.show_latest_follower:
             views.append(VIEW_FOLLOWERS_LATEST)
-        
+
         # Add latest sub view if enabled and user is affiliate/partner
         if self.show_latest_sub and self.is_affiliate_or_partner():
             views.append(VIEW_LAST_SUB)
-        
+
         # Add gifted sub view if enabled and user is affiliate/partner
         if self.show_latest_gifted_sub and self.is_affiliate_or_partner():
             views.append(VIEW_LAST_GIFT)
-        
+
         # Add cheer view if enabled and user is affiliate/partner
         if self.show_latest_cheer and self.is_affiliate_or_partner():
             views.append(VIEW_LAST_CHEER)
-        
+
         return views
 
     def update(self, force_update=False):
@@ -520,14 +519,13 @@ class TwitchUser:
         """Check if essential data has been fetched."""
         # Avatar can fail to load, so don't block on it
         # Only check subs if affiliate/partner
-        base_ready = (self.user_id is not None and 
+        base_ready = (self.user_id is not None and
                       self.total_followers is not None and
                       self.broadcaster_type is not None)
-        
+
         if self.is_affiliate_or_partner():
             return base_ready and self.total_subs is not None
-        else:
-            return base_ready
+        return base_ready
 
     def draw_stat(self, title, value, x, y):
         screen.pen = white if value is not None else faded
@@ -557,7 +555,7 @@ class TwitchUser:
         w, _ = screen.measure_text(handle)
         screen.pen = white
         screen.text(handle, 80 - (w / 2), 4)
-        
+
         # Draw broadcaster status below username
         screen.font = small_font
         screen.pen = twitch_purple_light
@@ -570,7 +568,7 @@ class TwitchUser:
                 status = "Streamer"
         else:
             status = ""
-        
+
         if status:
             w, _ = screen.measure_text(status)
             screen.text(status, 80 - (w / 2), 18)
@@ -578,33 +576,33 @@ class TwitchUser:
     def draw_view_avatar_followers(self):
         """View 1: Avatar with follower count."""
         self.draw_header(self.display_name or self.username)
-        
+
         # Draw avatar on left
         if self.avatar:
             try:
                 screen.blit(self.avatar, 5, 37)
-            except:
+            except Exception:  # noqa: BLE001
                 draw_default_avatar()
         else:
             draw_default_avatar()
-        
+
         # Draw follower count on right
         self.draw_stat("followers", self.total_followers, 88, 50)
 
     def draw_view_followers_latest(self):
         """View 2: Follower count with latest follower (no avatar)."""
         self.draw_header(self.display_name or self.username)
-        
+
         # Centered follower count
         self.draw_stat_centered("followers", self.total_followers, 35)
-        
+
         # Latest follower below
         screen.font = small_font
         screen.pen = twitch_purple_light
         label = "latest follower"
         w, _ = screen.measure_text(label)
         screen.text(label, 80 - (w / 2), 70)
-        
+
         screen.font = large_font
         screen.pen = white
         follower_name = self.latest_follower if self.latest_follower else "..."
@@ -616,17 +614,17 @@ class TwitchUser:
     def draw_view_last_sub(self):
         """View 3: Last subscriber (no avatar)."""
         self.draw_header(self.display_name or self.username)
-        
+
         # Centered sub count
         self.draw_stat_centered("subscribers", self.total_subs, 35)
-        
+
         # Latest sub below
         screen.font = small_font
         screen.pen = twitch_purple_light
         label = "latest subscriber"
         w, _ = screen.measure_text(label)
         screen.text(label, 80 - (w / 2), 70)
-        
+
         screen.font = large_font
         screen.pen = white
         sub_name = self.latest_sub if self.latest_sub else "..."
@@ -637,7 +635,7 @@ class TwitchUser:
 
     def draw(self, connected):
         global current_view, last_view_change, wlan
-        
+
         # Draw animated purple gradient background
         if badge.battery_level() > 20 or badge.is_charging():
             draw_twitch_background()
@@ -665,7 +663,7 @@ class TwitchUser:
         width = ((size[0] - 4) / 100) * battery_level
         screen.pen = twitch_purple
         screen.shape(shape.rectangle(pos[0] + 2, pos[1] + 2, width, size[1] - 4))
-        
+
         # Draw LIVE indicator if streaming (below battery in red)
         if self.is_live:
             screen.font = small_font
@@ -675,7 +673,7 @@ class TwitchUser:
             # Center under battery (battery center x = pos[0] + size[0]/2)
             live_x = pos[0] + (size[0] / 2) - (live_w / 2)
             screen.text(live_text, live_x, pos[1] + size[1] + 3)
-        
+
         # Draw username/handle area with loading status
         handle = self.display_name or self.username
 
@@ -687,7 +685,7 @@ class TwitchUser:
         # Use the handle area to show loading progress if not everything is ready
         # avatar can be None (not fetched), False (fetch failed), or an Image object
         # Check if ANY data is missing AND WiFi is actually connected
-        if ((self.display_name is None or self.total_followers is None) or 
+        if ((self.display_name is None or self.total_followers is None) or
             (self.avatar is None or self.avatar is False)) and wifi_connected:
             if not self.display_name or self.total_followers is None:
                 handle = "fetching data..."
@@ -702,7 +700,7 @@ class TwitchUser:
                 next(self._task)
             except StopIteration:
                 self._task = None
-            except:
+            except Exception:  # noqa: BLE001
                 self._task = None
                 handle = "fetch error"
 
@@ -715,11 +713,11 @@ class TwitchUser:
         # Handle view rotation and manual navigation
         if last_view_change == 0:
             last_view_change = badge.ticks
-        
+
         # Get enabled views based on config
         enabled_views = self.get_enabled_views()
         num_views = len(enabled_views)
-        
+
         # Manual navigation with buttons UP and DOWN (only when we have display data)
         # Don't require avatar since it can fail to load
         if self.display_name and self.total_followers is not None and num_views > 0:
@@ -754,7 +752,7 @@ class TwitchUser:
             if self.avatar and not isinstance(self.avatar, bool):
                 try:
                     screen.blit(self.avatar, vec2(5, 37))
-                except:
+                except Exception:  # noqa: BLE001
                     draw_default_avatar()
             else:
                 draw_default_avatar()
@@ -809,19 +807,19 @@ class TwitchUser:
                 label = "gifted subs"
                 w, _ = screen.measure_text(label)
                 screen.text(label, 80 - (w / 2), 35)
-                
+
                 screen.font = large_font
                 screen.pen = faded
                 gift_count = format_number(fake_number())
                 w, _ = screen.measure_text(gift_count)
                 screen.text(gift_count, 80 - (w / 2), 50)
-                
+
                 screen.font = small_font
                 screen.pen = twitch_purple_light
                 gifter_label = "from"
                 w, _ = screen.measure_text(gifter_label)
                 screen.text(gifter_label, 80 - (w / 2), 70)
-                
+
                 screen.font = large_font
                 screen.pen = faded
                 gifter_name = fake_username()
@@ -833,19 +831,19 @@ class TwitchUser:
                 label = "gifted subs"
                 w, _ = screen.measure_text(label)
                 screen.text(label, 80 - (w / 2), 35)
-                
+
                 screen.font = large_font
                 screen.pen = white
                 gift_count = format_number(self.latest_gift_count)
                 w, _ = screen.measure_text(gift_count)
                 screen.text(gift_count, 80 - (w / 2), 50)
-                
+
                 screen.font = small_font
                 screen.pen = twitch_purple_light
                 gifter_label = "from"
                 w, _ = screen.measure_text(gifter_label)
                 screen.text(gifter_label, 80 - (w / 2), 70)
-                
+
                 screen.font = large_font
                 screen.pen = white
                 gifter_name = self.latest_gifter
@@ -872,19 +870,19 @@ class TwitchUser:
                 label = "latest cheer"
                 w, _ = screen.measure_text(label)
                 screen.text(label, 80 - (w / 2), 35)
-                
+
                 screen.font = large_font
                 screen.pen = faded
                 cheer_amount = format_number(fake_number()) + " bits"
                 w, _ = screen.measure_text(cheer_amount)
                 screen.text(cheer_amount, 80 - (w / 2), 50)
-                
+
                 screen.font = small_font
                 screen.pen = twitch_purple_light
                 cheerer_label = "from"
                 w, _ = screen.measure_text(cheerer_label)
                 screen.text(cheerer_label, 80 - (w / 2), 70)
-                
+
                 screen.font = large_font
                 screen.pen = faded
                 cheerer_name = fake_username()
@@ -896,19 +894,19 @@ class TwitchUser:
                 label = "latest cheer"
                 w, _ = screen.measure_text(label)
                 screen.text(label, 80 - (w / 2), 35)
-                
+
                 screen.font = large_font
                 screen.pen = white
                 cheer_amount = format_number(self.latest_cheer_amount) + " bits"
                 w, _ = screen.measure_text(cheer_amount)
                 screen.text(cheer_amount, 80 - (w / 2), 50)
-                
+
                 screen.font = small_font
                 screen.pen = twitch_purple_light
                 cheerer_label = "from"
                 w, _ = screen.measure_text(cheerer_label)
                 screen.text(cheerer_label, 80 - (w / 2), 70)
-                
+
                 screen.font = large_font
                 screen.pen = white
                 cheerer_name = self.latest_cheerer
@@ -925,7 +923,7 @@ class TwitchUser:
                 label = "latest cheer"
                 w, _ = screen.measure_text(label)
                 screen.text(label, 80 - (w / 2), 70)
-        
+
         # Draw view indicator dots at bottom (only for enabled views)
         enabled_views = self.get_enabled_views()
         num_views = len(enabled_views)
@@ -950,10 +948,10 @@ def draw_twitch_background():
     # Dark base
     screen.pen = black
     screen.shape(shape.rectangle(0, 0, screen.width, screen.height))
-    
+
     # Animated purple glow circles in background
     screen.pen = color.rgb(100, 65, 165, 30)
-    
+
     # Floating circles animation
     for i in range(3):
         offset = math.sin((badge.ticks / 3000) + i * 2) * 20
@@ -983,12 +981,12 @@ force_update = False
 last_press = 0  # Track last button press for power saving
 
 # Load connection details from secrets first
-get_connection_details(user)
+get_connection_details()
 
 
 def load_cached_data():
     """Load cached data on app startup if available."""
-    
+
     # Clean up old cache files from previous API structure
     old_files = ["/twitch_user.json", "/twitch_followers.json", "/twitch_subs.json"]
     for old_file in old_files:
@@ -996,15 +994,15 @@ def load_cached_data():
             try:
                 os.remove(old_file)
                 message(f"Removed old cache file: {old_file}")
-            except Exception as e:
+            except OSError as e:
                 message(f"Failed to remove old cache: {e}")
-    
+
     # Try to load unified API data
     if file_exists("/twitch_data.json"):
         try:
             with open("/twitch_data.json", "r") as f:
                 data = json.loads(f.read())
-            
+
             # Check for API error response
             if "error" not in data:
                 # Parse unified API response
@@ -1022,7 +1020,7 @@ def load_cached_data():
                 user.latest_cheerer = data.get("last_cheerer")
                 user.latest_cheer_amount = data.get("last_cheer_amount")
                 user.is_live = data.get("is_live", False)
-                
+
                 # Parse badge config settings
                 badge_config = data.get("badge_config", {})
                 user.auto_scroll = badge_config.get("auto_scroll", 30)
@@ -1030,25 +1028,25 @@ def load_cached_data():
                 user.show_latest_follower = badge_config.get("show_latest_follower", True)
                 user.show_latest_gifted_sub = badge_config.get("show_latest_gifted_sub", True)
                 user.show_latest_cheer = badge_config.get("show_latest_cheer", True)
-                
+
                 message("Loaded cached API data")
             else:
                 message(f"Cached data has error: {data.get('message', 'Unknown')}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             message(f"Failed to load cached data: {e}")
-    
+
     # Try to load avatar
     if file_exists("/twitch_avatar.png"):
         try:
             user.avatar = image.load("/twitch_avatar.png")
             message("Loaded cached avatar")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             message(f"Failed to load cached avatar: {e}")
             user.avatar = False  # Mark as failed so it can be retried
     else:
         # No cache file - leave as None to trigger fetch
         message("No avatar cache - will fetch")
-    
+
     # Set connected=True if we loaded essential data (user info and followers)
     # This allows instant display from cache without WiFi
     # Avatar is optional - can be fetched later if needed
@@ -1081,7 +1079,7 @@ def no_secrets_error():
     """Show instructions when Twitch credentials are missing."""
     screen.pen = black
     screen.shape(shape.rectangle(0, 0, screen.width, screen.height))
-    
+
     screen.font = large_font
     screen.pen = white
     center_text("Twitch Setup", 5)
@@ -1103,7 +1101,7 @@ def auth_error_screen():
     """Show authentication error message."""
     screen.pen = black
     screen.shape(shape.rectangle(0, 0, screen.width, screen.height))
-    
+
     screen.font = large_font
     screen.pen = white
     center_text("Auth Error!", 5)
@@ -1121,7 +1119,7 @@ def connection_error():
     """Show connection failure message."""
     screen.pen = black
     screen.shape(shape.rectangle(0, 0, screen.width, screen.height))
-    
+
     screen.font = large_font
     screen.pen = white
     center_text("Connection Failed!", 5)
@@ -1157,7 +1155,7 @@ def update():
             message("WiFi reactivated for refresh")
         user.update(True)
 
-    if not get_connection_details(user):
+    if not get_connection_details():
         no_secrets_error()
         return
 
@@ -1173,25 +1171,25 @@ def update():
         if (user.avatar is None or user.avatar is False):
             if wlan is None:
                 wlan = network.WLAN(network.STA_IF)
-            
+
             # Turn on WiFi and connect if needed
             if not wlan.active():
                 wlan.active(True)
                 message("Activating WiFi to fetch avatar...")
-            
+
             if not wlan.isconnected():
                 if ticks_start is None:
                     ticks_start = badge.ticks
                     wlan.connect(WIFI_SSID, WIFI_PASSWORD)
                     message("Connecting to WiFi for avatar...")
-                
+
                 # Wait for connection (timeout after 60 seconds)
                 if badge.ticks - ticks_start < WIFI_TIMEOUT * 1000:
                     if wlan.isconnected():
                         message("WiFi connected for avatar fetch!")
                         wifi_was_used = True
                         ticks_start = None
-        
+
         user.draw(True)
         # Check if WiFi is still on and should be disconnected (after a refresh)
         if wlan is not None and wlan.active() and user.is_data_ready():
@@ -1205,9 +1203,9 @@ def update():
         # Track that we used WiFi
         if not wifi_was_used and wlan is not None and wlan.isconnected():
             wifi_was_used = True
-        
+
         user.draw(connected)
-        
+
         # Disconnect WiFi after all data is fetched to save battery
         if wifi_was_used and user.is_data_ready() and wlan is not None and wlan.active():
             wlan_disconnect()
