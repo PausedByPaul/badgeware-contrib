@@ -5,6 +5,9 @@ builtins = [
     "ptr8",
     "ptr32",
 
+# tween.py
+    "tween",
+
 # picovector
     "algorithm",
     "brush",
@@ -108,10 +111,12 @@ lint.select = [
 # E402 - "module level import not at top of file". Needs must!
 # COM812 - "Add trailing comma". These are a little obnoxious and weird.
 # ICN001 - "numpy should be imported as np". No. No it should not.
+# B905 - "zip() without strict=". MicroPython's zip() doesn't support strict.
 
 lint.ignore = [
     "E501",
     "E402",
     "COM812",
-    "ICN001"
+    "ICN001",
+    "B905"
 ]
