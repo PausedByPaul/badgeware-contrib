@@ -10,16 +10,15 @@ Show off your Twitch streamer stats on a wearable badge - a brilliant way to eng
 - **Latest gifted sub** — gifter name and gift count
 - **Latest cheer** — bit amount and cheerer name
 - **Live status indicator** — shows when you're streaming
-- **Profile avatar** — displayed on the Tufty 2350's colour screen
 - **Auto-rotating views** — cycle through stats hands-free
 - **Battery & charging indicator** — so you know when to top up
 - **Smart caching** — loads instantly from cache, upon request by pressing A+C (hold)
 
 ## Requirements
 
-- **Pimoroni Tufty 2350**
+- **Pimoroni Badger 2350**
 - **Badge firmware v3.1.1** — both Badger 2350 and Tufty 2350 must be running firmware version **3.1.1** or later (v2.x firmware is no longer supported)
-  - [Tufty 2350 firmware](https://github.com/pimoroni/tufty2350)
+  - [Badger 2350 firmware](https://github.com/pimoroni/badger2350)
 - A WiFi network for the badge to connect to
 - A **Twitch UUID** from the Badge API service (see below)
 
@@ -79,7 +78,7 @@ Make sure your badge is running firmware **v3.1.1** or later.
 
 ### 2. Copy the Twitch app to your badge
 
-opy the contents of the `Tufty/twitch/` folder from this repo into:
+Copy the contents of the `Badger/twitch/` folder from this repo into:
 
 ```
 apps/twitch/
@@ -104,7 +103,7 @@ Eject the mass storage device and select **Twitch** from the app menu. On first 
 | Button | Action |
 |--------|--------|
 | UP / DOWN | Cycle through views |
-| A + C (hold 2s) | Force WiFi refresh (clears cache) |
+| A | Force WiFi refresh (clears cache) |
 | HOME | Return to menu |
 
 ## Display Views
@@ -113,7 +112,7 @@ The colour display shows richer views with your profile avatar, Twitch-purple th
 
 | View | Content |
 |------|---------|
-| Avatar + Counts | Profile picture with follower & subscriber totals |
+| Counts | Profile picture with follower & subscriber totals |
 | Latest Follower | Total followers and latest follower name |
 | Latest Sub | Total subs and latest subscriber name |
 | Latest Gift | Gift count and gifter name |
